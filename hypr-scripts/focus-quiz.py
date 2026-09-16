@@ -36,8 +36,8 @@ def ask_lmstudio(prompt):
 def main():
     state = load_state()
     if not state.get("active"):
-        print("No active Focus Mode session.")
-        return 0
+        print("No active Focus Mode session — nothing to unlock.")
+        return 2
     topic = (state.get("topic") or "").strip() or "this session"
     print(f"Topic: {topic}\n")
     qs = (ask_lmstudio(

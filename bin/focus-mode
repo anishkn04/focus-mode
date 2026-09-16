@@ -112,6 +112,9 @@ json.dump(s, open(p, 'w'), indent=2)
     rm -f "$PID_FILE"
   fi
   pkill -f "focus-enforcer.py" 2>/dev/null || true
+  prev="$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('dnd_prev','off'))" 2>/dev/null)"
+  if [ "$prev" = "off" ]; then noctalia msg notification-dnd-set false >/dev/null 2>&1 || true; fi
+  noctalia msg caffeine-disable >/dev/null 2>&1 || true
   echo "Focus Mode ended."
 }
 
@@ -134,5 +137,5 @@ case "${1:-}" in
   unlock) cmd_unlock ;;
   status) cmd_status ;;
   pick) exec "$PICKER" ;;
-  *) echo "usage: focus-mode {start|stop|status|pick} [options]" >&2; exit 1 ;;
+  *) echo "usage: focus-mode {start|stop|status|cancel|pick} [options]" >&2; exit 1 ;;
 esac
