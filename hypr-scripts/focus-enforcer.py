@@ -46,15 +46,46 @@ def hypr_clients() -> list:
         return []
 
 
-def close_window(addr: str) -> bool:
+def hypr_eval(lua: str) -> bool:
+    """Run Lua via `hyprctl eval`. Classic `hyprctl dispatch <syntax>` is
+    Lua-wrapped since Hyprland 0.56, so targeted window ops go through eval."""
     try:
         r = subprocess.run(
-            ["hyprctl", "dispatch", "closewindow", f"address:{addr}"],
-            capture_output=True, text=True, timeout=5,
+            ["hyprctl", "eval", lua], capture_output=True, text=True, timeout=10
         )
         return r.returncode == 0
     except Exception:
         return False
+
+
+def active_address() -> str:
+    try:
+        out = subprocess.run(
+            ["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=5
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return ""
+        return str(json.loads(out.stdout).get("address", "") or "")
+    except Exception:
+        return ""
+
+
+def close_window(addr: str) -> bool:
+    """Close one window by address: focus it, verify, close, restore focus."""
+    prev = active_address()
+    if prev == addr:
+        return hypr_eval("hl.dispatch(hl.dsp.window.close())")
+    if not hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{addr}" }}))'):
+        return False
+    time.sleep(0.3)
+    if active_address() != addr:
+        return False  # never close a window we did not verify as focused
+    ok = hypr_eval("hl.dispatch(hl.dsp.window.close())")
+    time.sleep(0.3)
+    if prev and prev != addr:
+        # Best-effort focus restore; ignore failure (window may be gone).
+        hypr_eval(f'hl.dispatch(hl.dsp.focus({{ window = "address:{prev}" }}))')
+    return ok
 
 
 def is_allowed(win: dict, state: dict) -> bool:
