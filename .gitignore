@@ -1,0 +1,27 @@
+# Runtime (never commit your session)
+state.json
+*.log
+pick.log
+quiz.log
+enforcer.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Qt / build
+build/
+dist/
+*.spec
+
+# Icons (generated; SVG is source)
+icon-theme.cache
+hicolor/*/apps/*.png
+
+# OS / editors
+.DS_Store
+*~
+.vscode/
+.idea/

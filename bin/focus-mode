@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Focus Mode CLI for Hyprland.
+# Usage:
+#   focus-mode start [--preset NAME] [--duration 25m] [--allow kitty,code] [--topic "text"]
+#   focus-mode stop            # quiz coming; currently just unlocks
+#   focus-mode unlock
+#   focus-mode status
+#   focus-mode pick            # interactive fuzzel flow
+set -u
+
+CONFIG_DIR="$HOME/.config/focus-mode"
+PRESETS_DIR="$CONFIG_DIR/presets"
+STATE_FILE="$CONFIG_DIR/state.json"
+PID_FILE="$CONFIG_DIR/enforcer.pid"
+ENFORCER="$HOME/.config/hypr/scripts/focus-enforcer.py"
+PICKER="$HOME/.config/hypr/scripts/focus-pick.sh"
+
+is_active() {
+  [ -f "$STATE_FILE" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$STATE_FILE')).get('active') else 1)" 2>/dev/null
+}
+
+# Parse "25", "25m", "1h", "1h30m" -> seconds
+parse_duration() {
+  local input="${1:-25m}" total=0 num suffix
+  local rest="$input"
+  if [[ "$rest" =~ ^[0-9]+$ ]]; then echo $((rest * 60)); return 0; fi
+  while [[ "$rest" =~ ^([0-9]+)([smh])(.*)$ ]]; do
+    num="${BASH_REMATCH[1]}"; suffix="${BASH_REMATCH[2]}"; rest="${BASH_REMATCH[3]}"
+    case "$suffix" in
+      s) total=$((total + num)) ;;
+      m) total=$((total + num * 60)) ;;
+      h) total=$((total + num * 3600)) ;;
+    esac
+  done
+  if [[ -z "$rest" && "$total" -gt 0 ]]; then echo "$total"; return 0; fi
+  echo "invalid duration: $1 (examples: 25, 25m, 1h, 1h30m)" >&2
+  return 1
+}
+
+cmd_start() {
+  local preset="" duration="25m" allow_extra="" topic=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --preset) preset="${2:-}"; shift 2 ;;
+      --duration) duration="${2:-}"; shift 2 ;;
+      --allow) allow_extra="${2:-}"; shift 2 ;;
+      --topic) topic="${2:-}"; shift 2 ;;
+      *) echo "unknown flag: $1" >&2; return 1 ;;
+    esac
+  done
+
+  if is_active; then echo "Focus Mode already active." >&2; return 1; fi
+
+  local secs now ends allowed_json grandfathered_json
+  secs="$(parse_duration "$duration")" || return 1
+  now="$(date +%s)"
+  ends=$((now + secs))
+
+  local preset_classes=""
+  if [ -n "$preset" ]; then
+    local pf="$PRESETS_DIR/$preset.json"
+    [ -f "$pf" ] || { echo "preset not found: $preset" >&2; return 1; }
+    preset_classes="$(jq -r '.classes[]' "$pf" 2>/dev/null | tr ',' ' ')"
+  fi
+  allowed_json="$(printf '%s\n%s' "$preset_classes" "$(echo "$allow_extra" | tr ',' ' ')" \
+    | tr ' ' '\n' | sed 's/,/ /g' | tr ' ' '\n' | grep -v '^$' | tr '[:upper:]' '[:lower:]' | sort -u | jq -R . | jq -s -c .)"
+  [ "$allowed_json" != "[]" ] || { echo "allowlist is empty. Use --preset or --allow." >&2; return 1; }
+
+  # Windows already open are grandfathered (left alone).
+  grandfathered_json="$(hyprctl clients -j 2>/dev/null | jq -c '[.[].address]')"
+  [ -n "$grandfathered_json" ] || grandfathered_json="[]"
+  mkdir -p "$CONFIG_DIR"
+
+  python3 - "$STATE_FILE" "$allowed_json" "$grandfathered_json" <<'EOF'
+import json, sys
+_, state_file, allowed_j, gf_j = sys.argv
+state = {
+    "active": True,
+    "allowed": json.loads(allowed_j),
+    "grandfathered": json.loads(gf_j),
+    "duration_secs": 0,
+    "started_at": 0,
+    "ends_at": 0,
+}
+json.dump(state, open(state_file, "w"), indent=2)
+EOF
+
+  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    sleep 0.5
+  fi
+  setsid python3 "$ENFORCER" >/dev/null 2>&1 < /dev/null &
+
+  local n
+  n="$(echo "$allowed_json" | jq -r 'join(", ")')"
+  echo "Session started: $duration. Allowed: $n."
+}
+
+cmd_unlock() {
+  if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
+  python3 -c "
+import json
+p = '$STATE_FILE'
+s = json.load(open(p))
+s['active'] = False
+json.dump(s, open(p, 'w'), indent=2)
+"
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+  pkill -f "focus-enforcer.py" 2>/dev/null || true
+  echo "Focus Mode ended."
+}
+
+cmd_status() {
+  if ! is_active; then echo "Focus Mode: inactive"; return 0; fi
+  python3 - "$STATE_FILE" <<'EOF'
+import json, sys, time
+s = json.load(open(sys.argv[1]))
+now = time.time()
+rem = max(0, int(s.get("ends_at", now) - now))
+h, m = rem // 3600, (rem % 3600) // 60
+print(f"Focus Mode: ACTIVE  remaining {h}h {m:02d}m")
+print(f"Allowed: {', '.join(s.get('allowed', []))}")
+EOF
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "$@" ;;
+  stop) cmd_unlock ;;
+  unlock) cmd_unlock ;;
+  status) cmd_status ;;
+  pick) exec "$PICKER" ;;
+  *) echo "usage: focus-mode {start|stop|status|pick} [options]" >&2; exit 1 ;;
+esac
