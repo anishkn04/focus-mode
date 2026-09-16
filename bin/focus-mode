@@ -66,9 +66,11 @@ cmd_start() {
     | tr ' ' '\n' | sed 's/,/ /g' | tr ' ' '\n' | grep -v '^$' | tr '[:upper:]' '[:lower:]' | sort -u | jq -R . | jq -s -c .)"
   [ "$allowed_json" != "[]" ] || { echo "allowlist is empty. Use --preset or --allow." >&2; return 1; }
 
-  # Windows already open are grandfathered (left alone).
-  grandfathered_json="$(hyprctl clients -j 2>/dev/null | jq -c '[.[].address]')"
-  [ -n "$grandfathered_json" ] || grandfathered_json="[]"
+  # Snapshot windows already open -> grandfathered (left alone).
+  # Stored as {address: {pid, class}}: Hyprland recycles addresses, so a bare
+  # address would let a NEW window inherit a dead window's exemption.
+  grandfathered_json="$(hyprctl clients -j 2>/dev/null | jq -c 'map({key: .address, value: {pid: .pid, class: .class}}) | from_entries')"
+  [ -n "$grandfathered_json" ] || grandfathered_json="{}"
   mkdir -p "$CONFIG_DIR"
 
   python3 - "$STATE_FILE" "$allowed_json" "$grandfathered_json" <<'EOF'

@@ -16,6 +16,16 @@ PID_FILE = CONFIG_DIR / "enforcer.pid"
 LOG_FILE = CONFIG_DIR / "enforcer.log"
 
 POLL_INTERVAL = 2.0
+ANNOUNCED: set = set()  # addrs already notified about (notify once each)
+
+# Never kill these, even if not in the allowlist (shell / picker / auth).
+ALWAYS_ALLOW_CLASSES = {
+    "fuzzel",
+    "dev.noctalia.noctalia",
+    "polkit-gnome-authentication-agent-1",
+    "xdg-desktop-portal-gtk",
+    "hyprpicker",
+}
 
 
 def log(msg: str) -> None:
@@ -91,10 +101,26 @@ def close_window(addr: str) -> bool:
 def is_allowed(win: dict, state: dict) -> bool:
     allowed = {str(c).lower() for c in state.get("allowed", [])}
     cls = str(win.get("class", "") or "").lower()
+    init_cls = str(win.get("initialClass", "") or "").lower()
     addr = str(win.get("address", ""))
-    if addr in set(state.get("grandfathered", [])):
+    pid = win.get("pid")
+
+    # Grandfathered: stored as {address: {pid, class}} so a NEW window that
+    # reuses a dead window's address does NOT inherit the exemption
+    # (Hyprland recycles addresses). Legacy lists are still honored.
+    gf = state.get("grandfathered", [])
+    if isinstance(gf, dict):
+        info = gf.get(addr) or {}
+        if pid and info.get("pid") == pid:
+            if str(info.get("class", "")).lower() in (cls, init_cls):
+                return True
+    elif addr in gf:
         return True
-    return cls in allowed
+    if cls in ALWAYS_ALLOW_CLASSES or init_cls in ALWAYS_ALLOW_CLASSES:
+        return True
+    if cls in allowed or init_cls in allowed:
+        return True
+    return False
 
 
 def main() -> int:
