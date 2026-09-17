@@ -13,6 +13,7 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "focus-mode"
 STATE_FILE = CONFIG_DIR / "state.json"
 SITE_FILE = CONFIG_DIR / "site-allowlist.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 PID_FILE = CONFIG_DIR / "enforcer.pid"
 LOG_FILE = CONFIG_DIR / "enforcer.log"
 
@@ -141,6 +142,37 @@ def notify(summary: str, body: str = "") -> None:
         pass
 
 
+def load_global_config() -> dict:
+    try:
+        return json.loads(CONFIG_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def play_cue() -> None:
+    if not load_global_config().get("sound"):
+        return
+    name = str(load_global_config().get("sound_name", "dialog-warning"))
+    try:
+        subprocess.run(["canberra-gtk-play", "-i", name], timeout=5,
+                       capture_output=True)
+    except Exception:
+        pass
+
+
+def alert(summary: str, body: str = "", duration_ms: int = 8000,
+          icon: int = 3) -> None:
+    """DND-proof alert: Hyprland compositor overlay + notification trail."""
+    text = f"{summary}: {body}" if body else summary
+    try:
+        subprocess.run(["hyprctl", "notify", str(icon), str(duration_ms),
+                        "0", text], timeout=10, capture_output=True)
+    except Exception as e:
+        log(f"hyprctl notify failed: {e}")
+    notify(summary, body)
+    play_cue()
+
+
 def load_site_rules() -> dict:
     """Load site-allowlist.json, cached by mtime (live-editable, no restart)."""
     try:
@@ -202,7 +234,9 @@ def enforce_sites(app_ok_wins: list, rules: dict, now: float) -> None:
         if first is None:
             VIOLATIONS[addr] = now
             log(f"SITE-WARN title={page_title(win)[:60]} addr={addr}")
-            notify("Focus Mode", f"Blocked site — window closes in {grace}s")
+            alert("Focus Mode",
+                  f"Blocked site — window closes in {grace}s unless you leave",
+                  duration_ms=10000)
         elif now - first >= grace:
             ok = close_window(addr)
             log(f"SITE-KILL title={page_title(win)[:60]} addr={addr} closed={ok}")
@@ -210,11 +244,26 @@ def enforce_sites(app_ok_wins: list, rules: dict, now: float) -> None:
                 VIOLATIONS.pop(addr, None)
 
 
+def timer_reminders(state: dict, flags: dict) -> None:
+    ends_at = state.get("ends_at")
+    if not ends_at:
+        return
+    remaining = ends_at - time.time()
+    if remaining <= 0 and not flags.get("end"):
+        flags["end"] = True
+        alert("Focus Mode", "Time is up! Pass the exit quiz to unlock.",
+              duration_ms=10000)
+    elif remaining <= 60 and not flags.get("m1"):
+        flags["m1"] = True
+        alert("Focus Mode", "1 minute left", duration_ms=5000, icon=1)
+
+
 def main() -> int:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(PID_FILE, "w") as f:
         f.write(str(__import__("os").getpid()))
     log("enforcer started")
+    flags: dict = {}
     try:
         while True:
             state = load_state()
@@ -233,6 +282,7 @@ def main() -> int:
                 ok = close_window(addr)
                 log(f"BLOCK class={win.get('class', '?')} addr={addr} closed={ok}")
             enforce_sites(survivors, load_site_rules(), time.time())
+            timer_reminders(state, flags)
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         pass

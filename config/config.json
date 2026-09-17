@@ -1,0 +1,5 @@
+{
+  "_comment": "Focus Mode global config. sound: cue with alerts (default false).",
+  "sound": false,
+  "sound_name": "dialog-warning"
+}
