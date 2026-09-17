@@ -120,6 +120,61 @@ def lmstudio_unload() -> None:
         print(f"(unload skipped: {e})")
 
 
+
+def parse_mcq(out: str) -> list:
+    """Parse model JSON into [(question, [options], correct_index)]."""
+    try:
+        t = out.strip()
+        if t.startswith("```"):
+            t = t.split("\n", 1)[1]
+            t = t.rsplit("```", 1)[0]
+        data = json.loads(t)
+        if isinstance(data, dict):
+            for key in ("questions", "quiz", "items"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+        qs = []
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict):
+                continue
+            q = str(item.get("q") or "").strip()
+            opts = [str(o).strip() for o in item.get("options", []) if str(o).strip()]
+            ans = item.get("answer", 0)
+            if isinstance(ans, str):
+                ans = "abcd".find(ans.strip().lower()[:1])
+            if q and len(opts) >= 2 and isinstance(ans, int) and 0 <= ans < len(opts):
+                qs.append((q, opts, ans))
+        return qs
+    except Exception:
+        return []
+
+
+def run_mcq(qs) -> tuple | None:
+    """Ask MCQs (shuffled), return (score, total). Local deterministic grading."""
+    import random
+    score, total = 0, 0
+    for qi, (q, opts, ans) in enumerate(qs, 1):
+        order = list(range(len(opts)))
+        random.shuffle(order)
+        correct = "ABCD"[order.index(ans)]
+        print(f"\n{qi}. {q}")
+        for pos, oi in enumerate(order):
+            print(f"   {'ABCD'[pos]}. {opts[oi]}")
+        try:
+            a = input("Your answer (letter): ").strip().upper()[:1]
+        except (EOFError, KeyboardInterrupt):
+            print("\nQuiz aborted — session stays locked.")
+            return None
+        total += 1
+        if a == correct:
+            print("Correct.")
+            score += 1
+        else:
+            print(f"Wrong — the answer was {correct}.")
+    return score, total
+
+
 def main():
     state = load_state()
     if not state.get("active"):
@@ -127,16 +182,24 @@ def main():
         return 2
     topic = (state.get("topic") or "").strip() or "this session"
     print(f"Topic: {topic}\n")
-    qs = (ask_lmstudio(
-        f"Write 3 short study questions about '{topic}', one per line.") or "").splitlines()
-    qs = [q.strip() for q in qs if q.strip()][:3]
+    out = ask_lmstudio(
+        "Write 3 multiple-choice questions about "
+        f"'{topic}'. Reply ONLY with JSON: "
+        '[{"q": "question?", "options": ["correct", "wrong1", "wrong2", "wrong3"], '
+        '"answer": 0}]. Correct answer FIRST.')
+    qs = parse_mcq(out or "")
     if not qs:
-        print("No AI backend — answer honestly, then unlock manually.")
+        print("Could not get MCQs — answer honestly, then unlock manually.")
         return 1
-    for q in qs:
-        print("Q:", q)
-        input("A: ")
-    print("\nDone. Unlocking.")
+    res = run_mcq(qs)
+    if res is None:
+        return 1
+    score, total = res
+    print(f"\nScore: {score}/{total}")
+    if score < 2:
+        print("Not yet — session stays locked.")
+        return 1
+    print("\nPassed. Unlocking.")
     subprocess.run(["focus-mode", "unlock"])
     lmstudio_unload()
     return 0
