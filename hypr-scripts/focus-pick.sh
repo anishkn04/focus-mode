@@ -8,17 +8,17 @@ sel() {
   fuzzel --dmenu --lines 12 --prompt "$1 " 2>/dev/null || true
 }
 
-DUR="$(printf '15m\n25m\n45m\n1h\n2h\n' | sel "Duration:")"
+DUR="$(printf '15m\n25m\n45m\n1h\n2h\n' | sel " Duration")"
 [ -z "${DUR:-}" ] && exit 0
 
 PRESET_LIST="$(ls "$PRESETS_DIR" 2>/dev/null | sed 's/\.json$//' | sort)"
-CHOICE="$(printf '%s\nCustom (type class names)\n' "$PRESET_LIST" | sel "Preset:")"
+CHOICE="$(printf '%s\nCustom (type class names)\n' "$PRESET_LIST" | sel " Preset")"
 [ -z "${CHOICE:-}" ] && exit 0
 
 ALLOW=""
 PRESET=""
 if [ "$CHOICE" = "Custom (type class names)" ]; then
-  ALLOW="$(printf '' | fuzzel --dmenu --lines 0 --prompt "Classes: " 2>/dev/null || true)"
+  ALLOW="$(printf '' | fuzzel --dmenu --lines 0 --prompt " Classes " --placeholder "kitty, code" 2>/dev/null || true)"
   [ -z "${ALLOW:-}" ] && exit 0
 else
   PRESET="$CHOICE"
