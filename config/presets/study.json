@@ -1,1 +1,1 @@
-{"classes": ["brave-origin", "kitty", "joplin", "stirling-pdf"], "description": "Study: browser + notes + PDF", "name": "study"}
+{"classes": ["brave-origin", "kitty", "joplin", "stirling-pdf"], "description": "Study: browser + notes + PDF (OpenCode terminals closed on sight)", "name": "study", "title_block": [{"label": "OpenCode terminal", "pattern": "^OC \\|", "regex": true}]}

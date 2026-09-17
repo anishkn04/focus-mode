@@ -111,6 +111,13 @@ def is_allowed(win: dict, state: dict) -> bool:
     addr = str(win.get("address", ""))
     pid = win.get("pid")
 
+    # 1. Quiz terminal: never kill the exit-quiz dialog.
+    if "focus quiz" in str(win.get("title", "") or "").lower():
+        return True
+    # 2b. Preset title blocklist (e.g. OpenCode terminals in study).
+    # Deliberately NOT grandfather-exempt.
+    if title_blocked(str(win.get("title", "") or ""), state.get("title_block", [])):
+        return False
     # Grandfathered: stored as {address: {pid, class}} so a NEW window that
     # reuses a dead window's address does NOT inherit the exemption
     # (Hyprland recycles addresses). Legacy lists are still honored.
@@ -171,6 +178,27 @@ def alert(summary: str, body: str = "", duration_ms: int = 8000,
         log(f"hyprctl notify failed: {e}")
     notify(summary, body)
     play_cue()
+
+
+def title_blocked(title: str, patterns) -> bool:
+    import re
+    tl = str(title or "").lower()
+    for entry in patterns or []:
+        if isinstance(entry, dict):
+            pat = str(entry.get("pattern", ""))
+            if not pat:
+                continue
+            if entry.get("regex"):
+                try:
+                    if re.search(pat, str(title or ""), re.IGNORECASE):
+                        return True
+                except re.error:
+                    continue
+            elif pat.lower() in tl:
+                return True
+        elif str(entry) and str(entry).lower() in tl:
+            return True
+    return False
 
 
 def load_site_rules() -> dict:
