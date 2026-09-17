@@ -1,0 +1,14 @@
+{
+  "_comment": "Site allowlist for Focus Mode. Browser windows only. Substring match on the page title. Non-matching settled titles: warn first, close after grace_secs. Live-reloaded, no restart needed.",
+  "browsers": ["brave-origin", "chromium", "google-chrome", "firefox"],
+  "grace_secs": 30,
+  "allow": [
+    {"pattern": "new tab", "label": "New Tab page"},
+    {"pattern": "google drive", "label": "Google Drive"},
+    {"pattern": "google docs", "label": "Google Docs"},
+    {"pattern": "gmail", "label": "Gmail"},
+    {"pattern": "microsoft to do", "label": "Microsoft To Do"},
+    {"pattern": "microsoft 365", "label": "Microsoft 365 portal"},
+    {"pattern": ".pdf", "label": "PDF documents"}
+  ]
+}

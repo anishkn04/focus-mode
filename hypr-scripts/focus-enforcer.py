@@ -12,11 +12,16 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".config" / "focus-mode"
 STATE_FILE = CONFIG_DIR / "state.json"
+SITE_FILE = CONFIG_DIR / "site-allowlist.json"
 PID_FILE = CONFIG_DIR / "enforcer.pid"
 LOG_FILE = CONFIG_DIR / "enforcer.log"
 
 POLL_INTERVAL = 2.0
 ANNOUNCED: set = set()  # addrs already notified about (notify once each)
+VIOLATIONS: dict = {}  # addr -> first-seen timestamp of site violation
+_SITE_CACHE: dict = {}
+
+TRANSIENT_TITLES = {"", "untitled", "loading", "loading..."}
 
 # Never kill these, even if not in the allowlist (shell / picker / auth).
 ALWAYS_ALLOW_CLASSES = {
@@ -123,6 +128,88 @@ def is_allowed(win: dict, state: dict) -> bool:
     return False
 
 
+def notify(summary: str, body: str = "") -> None:
+    try:
+        subprocess.run(["noctalia", "msg", "notification-show", summary, body],
+                       timeout=5, capture_output=True)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["notify-send", "--app-name=Focus Mode", summary, body],
+                       timeout=5, capture_output=True)
+    except Exception:
+        pass
+
+
+def load_site_rules() -> dict:
+    """Load site-allowlist.json, cached by mtime (live-editable, no restart)."""
+    try:
+        mtime = SITE_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if _SITE_CACHE.get("mtime") == mtime:
+        return _SITE_CACHE.get("rules", {})
+    try:
+        rules = json.loads(SITE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return _SITE_CACHE.get("rules", {})
+    _SITE_CACHE["mtime"] = mtime
+    _SITE_CACHE["rules"] = rules
+    return rules
+
+
+def is_browser(win: dict, rules: dict) -> bool:
+    browsers = {str(b).lower() for b in rules.get("browsers", [])}
+    if not browsers:
+        return False
+    return str(win.get("class", "") or "").lower() in browsers
+
+
+def page_title(win: dict) -> str:
+    import re
+    title = str(win.get("title", "") or "").strip()
+    title = re.sub(r"\s+-\s+[A-Za-z][\w ]*Origin\s*$", "", title).strip()
+    return title
+
+
+def site_allowed(title: str, rules: dict):
+    t = title.strip().lower()
+    if t in TRANSIENT_TITLES:
+        return None
+    for entry in rules.get("allow", []):
+        pat = str(entry.get("pattern", "")).lower()
+        if pat and pat in t:
+            return True
+    return False
+
+
+def enforce_sites(app_ok_wins: list, rules: dict, now: float) -> None:
+    if not rules:
+        return
+    grace = int(rules.get("grace_secs", 30))
+    live = {str(w.get("address", "")) for w in app_ok_wins}
+    for dead in [a for a in VIOLATIONS if a not in live]:
+        VIOLATIONS.pop(dead, None)
+    for win in app_ok_wins:
+        if not is_browser(win, rules):
+            continue
+        addr = str(win.get("address", ""))
+        verdict = site_allowed(page_title(win), rules)
+        if verdict is None or verdict is True:
+            VIOLATIONS.pop(addr, None)
+            continue
+        first = VIOLATIONS.get(addr)
+        if first is None:
+            VIOLATIONS[addr] = now
+            log(f"SITE-WARN title={page_title(win)[:60]} addr={addr}")
+            notify("Focus Mode", f"Blocked site — window closes in {grace}s")
+        elif now - first >= grace:
+            ok = close_window(addr)
+            log(f"SITE-KILL title={page_title(win)[:60]} addr={addr} closed={ok}")
+            if ok:
+                VIOLATIONS.pop(addr, None)
+
+
 def main() -> int:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     with open(PID_FILE, "w") as f:
@@ -134,12 +221,18 @@ def main() -> int:
             if not state or not state.get("active"):
                 log("state inactive/missing; exiting")
                 break
-            for win in hypr_clients():
+            wins = hypr_clients()
+            survivors = []
+            for win in wins:
                 addr = str(win.get("address", ""))
-                if not addr or is_allowed(win, state):
+                if not addr:
+                    continue
+                if is_allowed(win, state):
+                    survivors.append(win)
                     continue
                 ok = close_window(addr)
                 log(f"BLOCK class={win.get('class', '?')} addr={addr} closed={ok}")
+            enforce_sites(survivors, load_site_rules(), time.time())
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         pass
