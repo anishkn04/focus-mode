@@ -173,12 +173,89 @@ json.dump(s, open(p, 'w'), indent=2)
   cmd_unlock
 }
 
+cmd_gui() {
+  [ -x "$CONFIG_DIR/gui/.venv/bin/python" ] || { echo "GUI venv missing" >&2; return 1; }
+  setsid "$CONFIG_DIR/gui/.venv/bin/python" "$CONFIG_DIR/gui/app.py" "$@" >/dev/null 2>&1 < /dev/null &
+  echo "Focus Mode GUI launched."
+}
+
+cmd_sites() {
+  python3 - <<'PYEOF'
+import json, os
+p = os.path.expanduser("~/.config/focus-mode/site-allowlist.json")
+try:
+    rules = json.load(open(p))
+except Exception as e:
+    print(f"no site policy: {e}"); raise SystemExit(1)
+print(f"Browsers watched: {', '.join(rules.get('browsers', []))}")
+print(f"Grace: {rules.get('grace_secs', 30)}s — block wins over allow.")
+print("Blocked apps & windows:")
+for e in rules.get('app_block', []):
+    print(f"  - {e.get('kind')}: {e.get('class', e.get('pattern', ''))}")
+print("Blocked page titles:")
+for e in rules.get('block', []):
+    print(f"  - {e.get('pattern', '')}  ({e.get('label', '')})")
+print("Allowed page titles:")
+for e in rules.get("allow", []):
+    print(f"  - {e.get('pattern', '')}  ({e.get('label', '')})")
+PYEOF
+}
+
+cmd_help() {
+  case "${1:-}" in
+    ""|help)
+      cat <<'HELPEOF'
+Focus Mode — Zen-style focus sessions for Hyprland.
+
+Usage: focus-mode [COMMAND] [OPTIONS]
+
+Commands:
+  start     Begin a session [--preset/--duration/--allow/--topic]  [s]
+  stop      Open the exit quiz (the normal way out)                [q]
+  status    Show the active session                                [st]
+  cancel    Bail out: 3 questions + typed confirm                  [c]
+  pick      Interactive fuzzel starter                             [p]
+  gui       Open the Qt dashboard                                  [g]
+  sites     Show the browser site allowlist                        [w]
+  unlock    End the session (called by the quiz on pass)           [u]
+  help      This message or a command's help                       [h]
+
+Examples:
+  focus-mode pick
+  focus-mode start --preset study --duration 25m --topic "thermo"
+  focus-mode s --duration 1h --allow kitty,code
+Run 'focus-mode help COMMAND' for command-specific options.
+HELPEOF
+      return 0 ;;
+    s|start)
+      echo "Usage: focus-mode start [--preset NAME] [--duration DUR] [--allow A,B] [--topic TEXT] [--title-block P1,P2]"; return 0 ;;
+    *)
+      echo "unknown help topic: $1 (see 'focus-mode help')" >&2; return 1 ;;
+  esac
+}
+
+# Per-command help: `focus-mode start -h` == `focus-mode help start`.
+if [ "${2:-}" = "-h" ] || [ "${2:-}" = "--help" ]; then
+  case "${1:-}" in
+    s|start) set -- help start ;; q|stop) set -- help stop ;;
+    st|status) set -- help status ;; c|cancel) set -- help cancel ;;
+    p|pick) set -- help pick ;; g|gui) set -- help gui ;;
+    w|sites) set -- help sites ;; u|unlock) set -- help unlock ;;
+    h|help) set -- help help ;; *) set -- help "$1" ;;
+  esac
+fi
+
 case "${1:-}" in
-  start) shift; cmd_start "$@" ;;
-  stop) cmd_stop ;;
-  cancel) cmd_cancel ;;
-  unlock) cmd_unlock ;;
-  status) cmd_status ;;
-  pick) exec "$PICKER" ;;
-  *) echo "usage: focus-mode {start|stop|status|cancel|pick} [options]" >&2; exit 1 ;;
+  start|s) shift; cmd_start "$@" ;;
+  stop|q) cmd_stop ;;
+  cancel|c) cmd_cancel ;;
+  unlock|u) cmd_unlock ;;
+  status|st) cmd_status ;;
+  pick|p) exec "$PICKER" ;;
+  gui|g) shift; cmd_gui "$@" ;;
+  sites|w) cmd_sites ;;
+  help|h|-h|--help) cmd_help "${2:-}" ;;
+  "") echo "usage: focus-mode [COMMAND] [OPTIONS]" >&2
+      echo "Try 'focus-mode help' for more information." >&2; exit 1 ;;
+  *) echo "focus-mode: unknown command: $1" >&2; exit 1 ;;
 esac
