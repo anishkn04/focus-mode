@@ -31,7 +31,7 @@ QUIZ_PY = str(HOME / ".config" / "hypr" / "scripts" / "focus-quiz.py")
 from PySide6.QtCore import Qt, QThread, Signal, QTimer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMainWindow, QProgressBar, QPushButton, QSpinBox, QStackedWidget,
     QVBoxLayout, QWidget,
 )
@@ -84,10 +84,14 @@ def list_presets() -> list:
 
 
 def fill_presets(combo, current: str = "") -> None:
+    """Preset combo: capitalized display, lowercase keys as data."""
     combo.clear()
-    combo.addItems(list_presets())
-    if current and current in list_presets():
-        combo.setCurrentText(current)
+    for name in list_presets():
+        combo.addItem(name.capitalize(), name)
+    if current:
+        idx = combo.findData(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
 
 
 def site_summary() -> str:
@@ -293,7 +297,7 @@ class QuizDialog(QDialog):
         self.close_btn.show()
 
 
-SOUND_NAMES = ["dialog-warning", "dialog-error", "bell", "alarm-clock-elapsed"]
+SOUND_NAMES = ["dialog-warning", "dialog-error", "bell"]
 
 
 def read_sites() -> dict:
@@ -321,6 +325,18 @@ def play_sound(name: str) -> bool:
         except Exception:
             continue
     return False
+
+
+class SoundThread(QThread):
+    """Play a test cue off the UI thread (a 6s sound used to freeze the app)."""
+    finished_ok = Signal(bool)
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def run(self):
+        self.finished_ok.emit(play_sound(self.name))
 
 
 class SettingsDialog(QDialog):
@@ -405,11 +421,14 @@ class SettingsDialog(QDialog):
         cur = str(cfg.get("sound_name", "dialog-warning"))
         if cur in SOUND_NAMES:
             self.sound_combo.setCurrentText(cur)
+        else:
+            # Legacy/removed name (e.g. alarm-clock-elapsed): fall back.
+            self.sound_combo.setCurrentText("dialog-warning")
         self.sound_combo.currentTextChanged.connect(self.save_sound)
-        test = QPushButton("Test")
-        test.clicked.connect(lambda: play_sound(self.sound_combo.currentText()))
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self.test_sound)
         row.addWidget(self.sound_combo, 1)
-        row.addWidget(test)
+        row.addWidget(self.test_btn)
         lay.addLayout(row)
         hint = QLabel("Warnings always show as an overlay, even with\nDo Not Disturb on. Sound is optional.")
         hint.setObjectName("hint")
@@ -424,6 +443,19 @@ class SettingsDialog(QDialog):
         cfg["sound_name"] = self.sound_combo.currentText()
         write_config(cfg)
 
+    def test_sound(self):
+        self.test_btn.setEnabled(False)
+        self.test_btn.setText("…")
+        self._snd = SoundThread(self.sound_combo.currentText())
+        self._snd.finished_ok.connect(self.sound_done)
+        self._snd.finished.connect(lambda: self.test_btn.setEnabled(True))
+        self._snd.finished.connect(lambda: self.test_btn.setText("Test"))
+        self._snd.start()
+
+    def sound_done(self, ok):
+        if not ok:
+            self.test_btn.setText("Failed")
+
     def websites_page(self) -> QWidget:
         frame, lay = self.card("Distracting sites")
         rules = read_sites()
@@ -437,7 +469,20 @@ class SettingsDialog(QDialog):
         grow.addWidget(self.grace)
         grow.addStretch(1)
         lay.addLayout(grow)
-        lay.addWidget(QLabel("Blocked page titles"))
+        lay.addWidget(QLabel("Blocked apps & windows (any app, every preset)"))
+        self.applist = QListWidget()
+        self.applist.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.reload_list("app_block", self.applist)
+        lay.addWidget(self.applist, 1)
+        approw = QHBoxLayout()
+        approw.addStretch(1)
+        cap_app = QPushButton("From window…")
+        cap_app.clicked.connect(lambda: self.capture_window("apps"))
+        rm_app = QPushButton("Remove")
+        rm_app.clicked.connect(lambda: self.remove_entry("app_block", self.applist))
+        approw.addWidget(cap_app)
+        approw.addWidget(rm_app)
+        lay.addLayout(approw)
         lay.addWidget(QLabel("Blocked page titles — wins over Allowed, even nested"))
         self.bpatterns, self.bnew_pat = self.pattern_list(
             lay, "block", "e.g. shorts  (blocked even inside allowed sites)",
@@ -456,7 +501,8 @@ class SettingsDialog(QDialog):
         rules["grace_secs"] = int(value)
         write_sites(rules)
 
-    def pattern_list(self, lay, key: str, placeholder: str):
+    def pattern_list(self, lay, key: str, placeholder: str,
+                       capture=None):
         """A (list + add/remove row) bound to one rules key.
 
         capture: optional zero-arg callback for a "From window…" button
@@ -468,8 +514,11 @@ class SettingsDialog(QDialog):
         edit = QLineEdit()
         edit.setPlaceholderText(placeholder)
         add = QPushButton("Add")
+        add.setEnabled(False)
         add.clicked.connect(lambda: self.add_entry(key, edit, lst))
         edit.returnPressed.connect(lambda: self.add_entry(key, edit, lst))
+        edit.textChanged.connect(
+            lambda t: add.setEnabled(bool(t.strip())))
         remove = QPushButton("Remove")
         remove.clicked.connect(lambda: self.remove_entry(key, lst))
         self.reload_list(key, lst)
@@ -478,15 +527,36 @@ class SettingsDialog(QDialog):
         row.addWidget(edit, 1)
         row.addWidget(add)
         row.addWidget(remove)
+        if capture is not None:
+            cap = QPushButton("From window…")
+            cap.clicked.connect(capture)
+            row.addWidget(cap)
         lay.addLayout(row)
+        self._add_btns = getattr(self, "_add_btns", {})
+        self._add_btns[key] = (add, edit)
         return lst, edit
+
+    @staticmethod
+    def entry_text(e: dict) -> tuple:
+        """(short display, full tooltip) for allow/block/app entries."""
+        if e.get("kind") == "app":
+            short = e.get("label") or e.get("class", "")
+            full = f"app class: {e.get('class', '')}"
+            return short, full
+        pat = e.get("pattern", "")
+        label = e.get("label") or pat
+        short = label if label == pat else f"{label}"
+        full = pat if label == pat else f"{pat} — {label}"
+        return short, full
 
     def reload_list(self, key: str, lst):
         rules = read_sites()
         lst.clear()
         for e in rules.get(key, []):
-            label = e.get("label") or e.get("pattern", "")
-            lst.addItem(f"{e.get('pattern', '')}   —   {label}")
+            short, full = self.entry_text(e if isinstance(e, dict) else {})
+            item = QListWidgetItem(short)
+            item.setToolTip(full)
+            lst.addItem(item)
 
     def add_entry(self, key: str, edit, lst):
         pat = edit.text().strip().lower()
@@ -500,6 +570,35 @@ class SettingsDialog(QDialog):
             write_sites(rules)
         edit.clear()
         self.reload_list(key, lst)
+
+    def capture_window(self, mode: str):
+        """mode allow|block: pre-fill that list's add-field with the picked
+        page title (trim, then Add). mode apps: one-click class/title block."""
+        dlg = WindowPicker(self, mode)
+        if dlg.exec() != QDialog.Accepted or not dlg.result:
+            return
+        action, (cls, title, _is_browser) = dlg.result
+        rules = read_sites()
+        if mode in ("allow", "block"):
+            edit = self.new_pat if mode == "allow" else self.bnew_pat
+            edit.setText(title.strip().lower())
+            edit.setFocus()
+            return
+        # apps mode: direct-add, then refresh.
+        entries = rules.setdefault("app_block", [])
+        if action == "app":
+            if cls.lower() not in {str(e.get("class", "")).lower()
+                                   for e in entries if e.get("kind") == "app"}:
+                entries.append({"kind": "app", "class": cls,
+                                "label": f"{cls} (app)"})
+        else:
+            pat = title.strip().lower()
+            if pat and pat not in {str(e.get("pattern", "")).lower()
+                                   for e in entries if e.get("kind") == "title"}:
+                entries.append({"kind": "title", "pattern": pat,
+                                "label": f"{title.strip()[:50]} (title)"})
+        write_sites(rules)
+        self.reload_list("app_block", self.applist)
 
     def remove_entry(self, key: str, lst):
         row = lst.currentRow()
@@ -519,7 +618,7 @@ class SettingsDialog(QDialog):
         form.setSpacing(8)
         self.def_preset = QComboBox()
         fill_presets(self.def_preset, str(cfg.get("default_preset", "")))
-        self.def_preset.currentTextChanged.connect(self.save_session_defs)
+        self.def_preset.currentIndexChanged.connect(self.save_session_defs)
         self.def_duration = QLineEdit()
         self.def_duration.setPlaceholderText("25m")
         self.def_duration.setText(str(cfg.get("default_duration", "")))
@@ -536,9 +635,110 @@ class SettingsDialog(QDialog):
 
     def save_session_defs(self):
         cfg = read_config()
-        cfg["default_preset"] = self.def_preset.currentText()
+        cfg["default_preset"] = str(self.def_preset.currentData() or "")
         cfg["default_duration"] = self.def_duration.text().strip()
         write_config(cfg)
+
+
+ENF_PY = str(HOME / ".config" / "hypr" / "scripts" / "focus-enforcer.py")
+
+
+def load_enforcer():
+    spec = importlib.util.spec_from_file_location("focus_enf", ENF_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fetch_windows() -> list:
+    """Live windows as (class, title, is_browser). Own GUI + fuzzel filtered."""
+    try:
+        r = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True,
+                           text=True, timeout=8)
+        wins = json.loads(r.stdout or "[]")
+    except Exception:
+        return []
+    try:
+        enf = load_enforcer()
+        skip = {c.lower() for c in enf.ALWAYS_ALLOW_CLASSES} | {"focus-gui"}
+        strip = enf.page_title
+    except Exception:
+        skip, strip = {"fuzzel", "focus-gui"}, (lambda w: str(w.get("title", "")))
+    out = []
+    for w in wins:
+        cls = str(w.get("class", "") or "")
+        if not cls or cls.lower() in skip:
+            continue
+        out.append((cls, strip(w), False))
+    # mark browsers via site rules
+    try:
+        browsers = {str(b).lower() for b in read_sites().get("browsers", [])}
+        out = [(c, t, c.lower() in browsers) for c, t, _ in out]
+    except Exception:
+        pass
+    return sorted(out, key=lambda x: (not x[2], x[0].lower()))
+
+
+class WindowPicker(QDialog):
+    """Pick a live window. Site tabs pre-fill the add-field for trimming;
+    apps mode offers one-click class/title blocks."""
+
+    def __init__(self, parent, mode: str):
+        super().__init__(parent)
+        self.mode = mode  # allow | block | apps
+        self.setWindowTitle("Pick a window")
+        self.resize(560, 420)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(10)
+        hint = QLabel("Choose a window running right now.")
+        hint.setObjectName("hint")
+        lay.addWidget(hint)
+        self.list = QListWidget()
+        self.rows = fetch_windows()
+        if not self.rows:
+            self.list.addItem("(no windows found — is Hyprland running?)")
+            self.list.setEnabled(False)
+        for cls, title, is_browser in self.rows:
+            tag = "🌐" if is_browser else "🗔"
+            shown = f"{tag} {cls} — {title or '(no title)'}"
+            item = QListWidgetItem(shown)
+            item.setToolTip(f"class: {cls}\ntitle: {title}")
+            self.list.addItem(item)
+        if self.rows:
+            self.list.setCurrentRow(0)
+        lay.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        if mode == "apps":
+            self.b_app = QPushButton("Block app")
+            self.b_app.setObjectName("danger")
+            self.b_app.clicked.connect(lambda: self.choose("app"))
+            self.b_title = QPushButton("Block title")
+            self.b_title.clicked.connect(lambda: self.choose("title"))
+            row.addWidget(self.b_app)
+            row.addWidget(self.b_title)
+        else:
+            self.b_use = QPushButton("Use page title")
+            self.b_use.setObjectName("primary")
+            self.b_use.clicked.connect(lambda: self.choose("use"))
+            row.addWidget(self.b_use)
+        lay.addLayout(row)
+        self.result = None
+
+    def current(self):
+        r = self.list.currentRow()
+        return self.rows[r] if 0 <= r < len(self.rows) else None
+
+    def choose(self, action):
+        cur = self.current()
+        if cur is None:
+            return
+        self.result = (action, cur)
+        self.accept()
 
 
 class Chip(QLabel):
@@ -669,7 +869,7 @@ class Dashboard(QMainWindow):
 
     def start(self):
         self.error.hide()
-        args = ["start", "--preset", self.preset.currentText(),
+        args = ["start", "--preset", str(self.preset.currentData() or ""),
                 "--duration", self.duration.currentText(),
                 "--topic", self.topic.text().strip()]
         code, out = run_cli(*args)

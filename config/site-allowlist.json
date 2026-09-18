@@ -1,14 +1,24 @@
 {
-  "_comment": "Site allowlist for Focus Mode. Browser windows only. Substring match on the page title. Non-matching settled titles: warn first, close after grace_secs. Live-reloaded, no restart needed.",
+  "_comment": "Site policy for Focus Mode. Browser windows only. Match = case-insensitive substring on the page title (regex: true for regex). Precedence: block wins over allow; allow wins over default-deny. Edit freely, no restart needed (reloaded every sweep). Example nested carve-out: allow 'youtube', block 'shorts'.",
   "browsers": ["brave-origin", "chromium", "google-chrome", "firefox"],
   "grace_secs": 30,
+  "block": [],
+  "app_block": [],
   "allow": [
-    {"pattern": "new tab", "label": "New Tab page"},
-    {"pattern": "google drive", "label": "Google Drive"},
-    {"pattern": "google docs", "label": "Google Docs"},
-    {"pattern": "gmail", "label": "Gmail"},
+    {"pattern": "new tab", "label": "Brave New Tab page"},
+    {"pattern": "google", "label": "Google Sites"},
+    {"pattern": "gemini", "label": "Google Gemini"},
+    {"pattern": "gemini notebook", "label": "Gemini Notebook (in-Brave)"},
+    {"pattern": "notebooklm", "label": "NotebookLM"},
     {"pattern": "microsoft to do", "label": "Microsoft To Do"},
+    {"pattern": "microsoft todo", "label": "Microsoft To Do (alt title)"},
     {"pattern": "microsoft 365", "label": "Microsoft 365 portal"},
-    {"pattern": ".pdf", "label": "PDF documents"}
+    {"pattern": "microsoft office", "label": "Microsoft Office"},
+    {"pattern": "office 365", "label": "Office 365"},
+    {"pattern": "onedrive", "label": "OneDrive"},
+    {"pattern": "sharepoint", "label": "SharePoint"},
+    {"pattern": "outlook", "label": "Outlook on the web"},
+    {"pattern": ".pdf", "label": "PDF documents"},
+    {"pattern": "^(settings|bookmarks|history|downloads)$", "regex": true, "label": "Brave internal pages (exact title)"}
   ]
 }

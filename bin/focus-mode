@@ -180,7 +180,7 @@ cmd_gui() {
 }
 
 cmd_sites() {
-  python3 - <<'PYEOF'
+  python3 - <<'EOF'
 import json, os
 p = os.path.expanduser("~/.config/focus-mode/site-allowlist.json")
 try:
@@ -188,17 +188,30 @@ try:
 except Exception as e:
     print(f"no site policy: {e}"); raise SystemExit(1)
 print(f"Browsers watched: {', '.join(rules.get('browsers', []))}")
-print(f"Grace: {rules.get('grace_secs', 30)}s — block wins over allow.")
-print("Blocked apps & windows:")
-for e in rules.get('app_block', []):
-    print(f"  - {e.get('kind')}: {e.get('class', e.get('pattern', ''))}")
-print("Blocked page titles:")
-for e in rules.get('block', []):
-    print(f"  - {e.get('pattern', '')}  ({e.get('label', '')})")
-print("Allowed page titles:")
+print(f"Warn-then-kill grace: {rules.get('grace_secs', 30)}s")
+print("Precedence: block wins over allow; allow wins over default-deny.")
+print("Blocked apps & windows (every preset, instant kill):")
+ablock = rules.get('app_block', [])
+if ablock:
+    for e in ablock:
+        if e.get('kind') == 'app':
+            print(f"  - app: {e.get('class', '')}  ({e.get('label', '')})")
+        else:
+            print(f"  - title: {e.get('pattern', '')}  ({e.get('label', '')})")
+else:
+    print("  (none)")
+print("Blocked page-title patterns (win over allow):")
+blocked = rules.get('block', [])
+if blocked:
+    for e in blocked:
+        print(f"  - {e.get('pattern', '')}  ({e.get('label', '')})")
+else:
+    print("  (none)")
+print("Allowed page-title patterns:")
 for e in rules.get("allow", []):
     print(f"  - {e.get('pattern', '')}  ({e.get('label', '')})")
-PYEOF
+print(f"\nEdit: {p} (live, no restart needed)")
+EOF
 }
 
 cmd_help() {

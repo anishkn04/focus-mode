@@ -95,6 +95,31 @@ QComboBox QAbstractItemView {{
     background: {p['surface']}; color: {p['text']};
     selection-background-color: {p['accent']};
     selection-color: {p['accent_ink']};
+    border: 1px solid {p['border']}; border-radius: {RADIUS['md']}px;
+    margin: 0; padding: {s['xs']}px; outline: none;
+}}
+QComboBox QAbstractItemView::item {{
+    padding: {s['sm']}px {s['md']}px; border-radius: {RADIUS['sm']}px;
+}}
+QScrollBar:vertical {{
+    background: transparent; width: 10px; margin: 2px;
+}}
+QScrollBar::handle:vertical {{
+    background: {p['border']}; border-radius: 4px; min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {p['muted']}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    background: none; height: 0;
+}}
+QScrollBar:horizontal {{
+    background: transparent; height: 10px; margin: 2px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {p['border']}; border-radius: 4px; min-width: 24px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: {p['muted']}; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    background: none; width: 0;
 }}
 QPushButton {{
     background: {p['surface']}; color: {p['text']};
