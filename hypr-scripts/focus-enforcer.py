@@ -26,6 +26,7 @@ TRANSIENT_TITLES = {"", "untitled", "loading", "loading..."}
 
 # Never kill these, even if not in the allowlist (shell / picker / auth).
 ALWAYS_ALLOW_CLASSES = {
+    "focus-gui",
     "fuzzel",
     "dev.noctalia.noctalia",
     "polkit-gnome-authentication-agent-1",

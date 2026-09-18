@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Focus Mode
+Comment=Zen-style focus sessions for Hyprland
+Exec=/usr/bin/python /usr/share/focus-mode/gui/app.py
+Icon=focus-gui
+StartupWMClass=focus-gui
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=focus;pomodoro;zen;productivity;
