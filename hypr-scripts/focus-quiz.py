@@ -183,20 +183,22 @@ def main():
     topic = (state.get("topic") or "").strip() or "this session"
     print(f"Topic: {topic}\n")
     out = ask_lmstudio(
-        "Write 3 multiple-choice questions about "
-        f"'{topic}'. Reply ONLY with JSON: "
+        "Write between 3 and 10 multiple-choice questions about "
+        f"'{topic}' (3 for one concept, more for many sub-topics). "
+        "Reply ONLY with JSON: "
         '[{"q": "question?", "options": ["correct", "wrong1", "wrong2", "wrong3"], '
         '"answer": 0}]. Correct answer FIRST.')
-    qs = parse_mcq(out or "")
-    if not qs:
+    qs = parse_mcq(out or "")[:10]
+    if len(qs) < 2:
         print("Could not get MCQs — answer honestly, then unlock manually.")
         return 1
     res = run_mcq(qs)
     if res is None:
         return 1
     score, total = res
-    print(f"\nScore: {score}/{total}")
-    if score < 2:
+    need = max(2, -(-2 * total // 3))
+    print(f"\nScore: {score}/{total} (need {need})")
+    if score < need:
         print("Not yet — session stays locked.")
         return 1
     print("\nPassed. Unlocking.")
@@ -206,4 +208,30 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--self-review-cancel" in sys.argv:
+        sys.exit(0 if self_review("cancel") else 1)
     sys.exit(main())
+
+
+def self_review(purpose="quiz"):
+    print("Answer honestly (one-liners rejected):")
+    for p in ["1. What did you work on? ",
+              "2. What did you complete/learn? ",
+              "3. What is next? "]:
+        try:
+            a = input(p).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("Aborted.")
+            return False
+        if len(a) < 8:
+            print("Too short — aborted.")
+            return False
+    if purpose == "cancel":
+        try:
+            ok = input("Type END FOCUS to confirm: ").strip() == "END FOCUS"
+        except (EOFError, KeyboardInterrupt):
+            ok = False
+        if not ok:
+            print("Wrong phrase — cancel aborted.")
+            return False
+    return True
