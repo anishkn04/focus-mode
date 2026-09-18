@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Focus Mode CLI for Hyprland.
+# Focus Mode CLI for Hyprland + Noctalia.
+# See 'focus-mode help' for full docs. Aliases: s/q/st/c/p/g/w/u/h.
 # Usage:
 #   focus-mode start [--preset NAME] [--duration 25m] [--allow kitty,code] [--topic "text"]
-#   focus-mode stop            # quiz coming; currently just unlocks
-#   focus-mode unlock
+#   focus-mode stop            # launches the exit quiz (normal way out)
+#   focus-mode unlock          # called by the quiz on pass; manual bypass
+#   focus-mode cancel          # force-stop without quiz (typed confirm, escape hatch)
 #   focus-mode status
 #   focus-mode pick            # interactive fuzzel flow
+#   focus-mode sites           # show browser site allowlist
 set -u
 
 CONFIG_DIR="$HOME/.config/focus-mode"
