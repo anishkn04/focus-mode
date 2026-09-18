@@ -139,9 +139,44 @@ print(f"Allowed: {', '.join(s.get('allowed', []))}")
 EOF
 }
 
+cmd_stop() {
+  if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
+  python3 -c "
+import json
+p = '$STATE_FILE'
+s = json.load(open(p))
+s['quiz_active'] = True
+json.dump(s, open(p, 'w'), indent=2)
+"
+  if command -v kitty >/dev/null 2>&1; then
+    kitty --title "Focus Quiz - answer to unlock" "$HOME/.config/hypr/scripts/focus-quiz-term.sh" &
+    echo "Exit quiz opened in a new terminal. Answer it to unlock."
+  else
+    python3 "$HOME/.config/hypr/scripts/focus-quiz.py"
+  fi
+}
+
+cmd_cancel() {
+  if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
+  echo "Cancelling still takes work: answer 3 questions, then confirm."
+  if ! python3 "$HOME/.config/hypr/scripts/focus-quiz.py" --self-review-cancel; then
+    echo "Cancel aborted." >&2; return 1
+  fi
+  python3 -c "
+import json, time
+p = '$STATE_FILE'
+s = json.load(open(p))
+s['cancelled'] = True
+s['cancelled_at'] = time.time()
+json.dump(s, open(p, 'w'), indent=2)
+"
+  cmd_unlock
+}
+
 case "${1:-}" in
   start) shift; cmd_start "$@" ;;
-  stop) cmd_unlock ;;
+  stop) cmd_stop ;;
+  cancel) cmd_cancel ;;
   unlock) cmd_unlock ;;
   status) cmd_status ;;
   pick) exec "$PICKER" ;;
