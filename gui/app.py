@@ -28,7 +28,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 FOCUS_MODE = str(HOME / ".local" / "bin" / "focus-mode")
 QUIZ_PY = str(HOME / ".config" / "hypr" / "scripts" / "focus-quiz.py")
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer  # noqa: E402
+from PySide6.QtCore import Qt, QObject, QThread, Signal, QTimer  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -37,6 +37,69 @@ from PySide6.QtWidgets import (  # noqa: E402
 )
 
 import theme  # noqa: E402
+
+
+def current_surface() -> str:
+    try:
+        from PySide6.QtWidgets import QApplication as QA
+        name = read_config().get("theme", "noctalia")
+        return theme.palette_for(name, QA.instance())["surface"]
+    except Exception:
+        return "#1a1e26"
+
+
+def fix_combo_popup(combo, bg: str) -> None:
+    """Paint a QComboBox popup container directly.
+
+    Stylesheets cannot target Qt's private QComboBoxPrivateContainer, so its
+    frame/margins keep the Fusion default (near-white bands). An inline
+    stylesheet on the exact container object bypasses selector matching.
+    """
+    try:
+        from PySide6.QtCore import Qt as _Q
+        win = combo.view().window()
+        win.setAttribute(_Q.WA_StyledBackground, True)
+        win.setStyleSheet(f"background: {bg}; border: none; margin: 0; padding: 0;")
+        flags = win.windowFlags() | _Q.FramelessWindowHint
+        win.setWindowFlags(flags)
+    except Exception:
+        pass
+
+
+def fix_container_object(win) -> None:
+    """Same fix for a live popup-container object (see PopupPolisher)."""
+    try:
+        from PySide6.QtCore import Qt as _Q
+        win.setAttribute(_Q.WA_StyledBackground, True)
+        win.setStyleSheet(
+            f"background: {current_surface()}; border: none; margin: 0; padding: 0;")
+        win.setWindowFlags(win.windowFlags() | _Q.FramelessWindowHint)
+    except Exception:
+        pass
+
+
+class PopupPolisher(QObject):
+    """Popup containers are born lazily on first showPopup — after any
+    construction-time polish. Catch each one at Show time and paint it."""
+
+    def eventFilter(self, obj, ev):
+        try:
+            from PySide6.QtCore import QEvent as _E
+            if ev.type() == _E.Show and obj.metaObject().className() in (
+                    "QComboBoxPrivateContainer", "QComboBoxListView"):
+                fix_container_object(obj if "Container" in obj.metaObject().className()
+                                     else obj.window())
+        except Exception:
+            pass
+        return False
+
+
+def polish_combos(root) -> None:
+    """Fix every combo popup under a dialog/window. Call once after setup."""
+    from PySide6.QtWidgets import QComboBox as _CB
+    bg = current_surface()
+    for combo in root.findChildren(_CB):
+        fix_combo_popup(combo, bg)
 
 
 def load_quiz_backend():
@@ -367,6 +430,7 @@ class SettingsDialog(QDialog):
             self.stack.addWidget(page)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.nav.setCurrentRow(0)
+        polish_combos(self)
 
     # -- helpers -------------------------------------------------------
     def card(self, title: str) -> tuple:
@@ -840,6 +904,7 @@ class Dashboard(QMainWindow):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
         self.refresh()
+        polish_combos(self)
 
     # -- behavior ------------------------------------------------------
     def refresh(self):
@@ -910,6 +975,8 @@ def main() -> int:
     except Exception:
         pass
     apply_theme(app)
+    _polisher = PopupPolisher(app)
+    app.installEventFilter(_polisher)
     fq = load_quiz_backend()
     dash = Dashboard(fq)
     if smoke:
