@@ -82,21 +82,33 @@ cmd_start() {
   # address would let a NEW window inherit a dead window's exemption.
   grandfathered_json="$(hyprctl clients -j 2>/dev/null | jq -c 'map({key: .address, value: {pid: .pid, class: .class}}) | from_entries')"
   [ -n "$grandfathered_json" ] || grandfathered_json="{}"
+  dnd_prev="$(noctalia msg notification-dnd-status 2>/dev/null | tr -d '[:space:]' || echo off)"
   mkdir -p "$CONFIG_DIR"
 
-  python3 - "$STATE_FILE" <<EOF
-import json
+  # Write state via argv/env + json.loads — NEVER interpolate JSON into
+  # Python source (JSON true/false/null are NameErrors in Python; topics
+  # with quotes/backslashes break triple-quoted strings the same way).
+  TOPIC="$topic" PRESET="$preset" SECS="$secs" NOW="$now" ENDS="$ends" \
+  DND_PREV="$dnd_prev" \
+  python3 - "$STATE_FILE" "$allowed_json" "$title_block_json" \
+    "$grandfathered_json" <<'PYEOF' || { echo "failed to write session state" >&2; return 1; }
+import json, os, sys
+_, state_file, allowed_j, title_j, gf_j = sys.argv
 state = {
     "active": True,
-    "allowed": $allowed_json,
-    "title_block": $title_block_json,
-    "grandfathered": $grandfathered_json,
-    "duration_secs": 0,
-    "started_at": 0,
-    "ends_at": 0,
+    "allowed": json.loads(allowed_j),
+    "title_block": json.loads(title_j),
+    "grandfathered": json.loads(gf_j),
+    "topic": os.environ.get("TOPIC", ""),
+    "preset": os.environ.get("PRESET", ""),
+    "duration_secs": int(os.environ.get("SECS", "0")),
+    "started_at": int(os.environ.get("NOW", "0")),
+    "ends_at": int(os.environ.get("ENDS", "0")),
+    "dnd_prev": os.environ.get("DND_PREV", "off"),
+    "quiz_active": False,
 }
 json.dump(state, open(state_file, "w"), indent=2)
-EOF
+PYEOF
 
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
