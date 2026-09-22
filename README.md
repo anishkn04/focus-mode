@@ -17,10 +17,8 @@ Built for **Hyprland** (Linux). Optional Qt dashboard included.
 
 ## Install
 
-**AUR (Arch/CachyOS):**
-```bash
-yay -S focus-mode
-```
+> **AUR:** not published yet (`packaging/PKGBUILD` is ready; tracked in
+> the repo until an AUR account is linked). Use tarball or source below.
 
 **Portable tarball (any Linux):**
 ```bash
