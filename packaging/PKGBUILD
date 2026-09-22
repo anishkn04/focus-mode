@@ -11,7 +11,7 @@ optdepends=('noctalia: native notifications and shell integration'
             'kitty: quiz terminal'
             'lmstudio: local LLM for the exit quiz')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/anishkn04/focus-mode/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('be4d9c6d0d682939a29545637c8f88fc2ce5899692b770d571b1aff39fd7226f')
 
 package() {
   cd "$pkgname-$pkgver"
