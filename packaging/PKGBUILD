@@ -1,0 +1,32 @@
+# Maintainer: Anish Kumar Neupane
+pkgname=focus-mode
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Zen-style focus sessions for Hyprland: app allowlists, site blocking, quiz-locked exit"
+arch=('any')
+url="https://github.com/anishkn04/focus-mode"
+license=('MIT')
+depends=('hyprland' 'jq' 'python' 'fuzzel' 'python-pyside6')
+optdepends=('noctalia: native notifications and shell integration'
+            'kitty: quiz terminal'
+            'lmstudio: local LLM for the exit quiz')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/anishkn04/focus-mode/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 bin/focus-mode "$pkgdir/usr/bin/focus-mode"
+  install -Dm755 hypr-scripts/focus-enforcer.py "$pkgdir/usr/share/focus-mode/hypr-scripts/focus-enforcer.py"
+  install -Dm755 hypr-scripts/focus-quiz.py "$pkgdir/usr/share/focus-mode/hypr-scripts/focus-quiz.py"
+  install -Dm755 hypr-scripts/focus-pick.sh "$pkgdir/usr/share/focus-mode/hypr-scripts/focus-pick.sh"
+  install -Dm755 hypr-scripts/focus-quiz-term.sh "$pkgdir/usr/share/focus-mode/hypr-scripts/focus-quiz-term.sh"
+  install -Dm755 hypr-scripts/focus-status.sh "$pkgdir/usr/share/focus-mode/hypr-scripts/focus-status.sh"
+  install -Dm644 gui/app.py "$pkgdir/usr/share/focus-mode/gui/app.py"
+  install -Dm644 gui/theme.py "$pkgdir/usr/share/focus-mode/gui/theme.py"
+  install -Dm644 launcher/focus-gui.desktop "$pkgdir/usr/share/applications/focus-gui.desktop"
+  install -Dm644 launcher/icons/scalable/apps/focus-gui.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/focus-gui.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 docs/KEYBINDS.md "$pkgdir/usr/share/doc/$pkgname/KEYBINDS.md"
+}
