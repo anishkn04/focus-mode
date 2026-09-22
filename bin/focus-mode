@@ -17,15 +17,23 @@ STATE_FILE="$CONFIG_DIR/state.json"
 PID_FILE="$CONFIG_DIR/enforcer.pid"
 ENFORCER="$HOME/.config/hypr/scripts/focus-enforcer.py"
 PICKER="$HOME/.config/hypr/scripts/focus-pick.sh"
+QUIZ="$HOME/.config/hypr/scripts/focus-quiz.py"
+GUI_PY="$CONFIG_DIR/gui/.venv/bin/python"
+GUI_APP="$CONFIG_DIR/gui/app.py"
+
+notify() {
+  noctalia msg notification-show "Focus Mode" "$1" >/dev/null 2>&1 || true
+  notify-send --app-name="Focus Mode" "Focus Mode" "$1" >/dev/null 2>&1 || true
+}
 
 is_active() {
   [ -f "$STATE_FILE" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$STATE_FILE')).get('active') else 1)" 2>/dev/null
 }
 
-# Parse "25", "25m", "1h", "1h30m" -> seconds
+# Parse "25", "25m", "1h", "90s", "1h30m" -> seconds
 parse_duration() {
-  local input="${1:-25m}" total=0 num suffix
-  local rest="$input"
+  local input="${1:-25m}" total=0 num suffix rest
+  rest="$input"
   if [[ "$rest" =~ ^[0-9]+$ ]]; then echo $((rest * 60)); return 0; fi
   while [[ "$rest" =~ ^([0-9]+)([smh])(.*)$ ]]; do
     num="${BASH_REMATCH[1]}"; suffix="${BASH_REMATCH[2]}"; rest="${BASH_REMATCH[3]}"
@@ -38,6 +46,12 @@ parse_duration() {
   if [[ -z "$rest" && "$total" -gt 0 ]]; then echo "$total"; return 0; fi
   echo "invalid duration: $1 (examples: 25, 25m, 1h, 1h30m)" >&2
   return 1
+}
+
+fmt_remaining() {
+  local s="$1"
+  if [ "$s" -lt 0 ]; then s=0; fi
+  printf "%dh %02dm" $((s / 3600)) $(((s % 3600) / 60))
 }
 
 cmd_start() {
@@ -53,35 +67,41 @@ cmd_start() {
     esac
   done
 
-  if is_active; then echo "Focus Mode already active." >&2; return 1; fi
+  if is_active; then echo "Focus Mode already active. 'focus-mode status' / 'focus-mode stop'." >&2; return 1; fi
 
-  local secs now ends allowed_json grandfathered_json
+  local secs now ends allowed_json grandfathered_json dnd_prev
   secs="$(parse_duration "$duration")" || return 1
   now="$(date +%s)"
   ends=$((now + secs))
 
-  local preset_classes=""
+  # Build allowlist: preset classes + --allow extras, lowercased, deduped.
+  local preset_classes="" preset_title_block="[]"
   if [ -n "$preset" ]; then
     local pf="$PRESETS_DIR/$preset.json"
-    [ -f "$pf" ] || { echo "preset not found: $preset" >&2; return 1; }
+    [ -f "$pf" ] || { echo "preset not found: $preset (see $PRESETS_DIR)" >&2; return 1; }
     preset_classes="$(jq -r '.classes[]' "$pf" 2>/dev/null | tr ',' ' ')"
     preset_title_block="$(jq -c '.title_block // []' "$pf" 2>/dev/null)"
     [ -n "$preset_title_block" ] || preset_title_block="[]"
   fi
+  # shellcheck disable=SC2086
   allowed_json="$(printf '%s\n%s' "$preset_classes" "$(echo "$allow_extra" | tr ',' ' ')" \
     | tr ' ' '\n' | sed 's/,/ /g' | tr ' ' '\n' | grep -v '^$' | tr '[:upper:]' '[:lower:]' | sort -u | jq -R . | jq -s -c .)"
   [ "$allowed_json" != "[]" ] || { echo "allowlist is empty. Use --preset or --allow." >&2; return 1; }
+
+  # Title blocklist: preset entries (regex/substring objects) + --title-block
+  # extras (comma-separated plain substrings). Kills on sight, no grandfathering.
   extra_title_json="$(printf '%s' "$title_block_extra" | tr ',' '\n' | grep -v '^$' \
     | jq -R '{pattern: ., label: .}' | jq -s -c . 2>/dev/null)"
   [ -n "$extra_title_json" ] || extra_title_json="[]"
   title_block_json="$(printf '%s\n%s' "$preset_title_block" "$extra_title_json" | jq -s -c 'add' 2>/dev/null)"
   [ -n "$title_block_json" ] || title_block_json="[]"
 
-  # Snapshot windows already open -> grandfathered (left alone).
+  # Snapshot windows already open -> grandfathered (left alone per user choice).
   # Stored as {address: {pid, class}}: Hyprland recycles addresses, so a bare
   # address would let a NEW window inherit a dead window's exemption.
   grandfathered_json="$(hyprctl clients -j 2>/dev/null | jq -c 'map({key: .address, value: {pid: .pid, class: .class}}) | from_entries')"
   [ -n "$grandfathered_json" ] || grandfathered_json="{}"
+
   dnd_prev="$(noctalia msg notification-dnd-status 2>/dev/null | tr -d '[:space:]' || echo off)"
   mkdir -p "$CONFIG_DIR"
 
@@ -110,15 +130,51 @@ state = {
 json.dump(state, open(state_file, "w"), indent=2)
 PYEOF
 
+  noctalia msg notification-dnd-set true >/dev/null 2>&1 || true
+  noctalia msg notification-clear-active >/dev/null 2>&1 || true
+  noctalia msg caffeine-enable >/dev/null 2>&1 || true
+
+  # (Re)launch enforcer detached.
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     kill "$(cat "$PID_FILE")" 2>/dev/null || true
     sleep 0.5
   fi
   setsid python3 "$ENFORCER" >/dev/null 2>&1 < /dev/null &
 
-  local n
+  local n site_note=""
   n="$(echo "$allowed_json" | jq -r 'join(", ")')"
-  echo "Session started: $duration. Allowed: $n."
+  if [ -f "$CONFIG_DIR/site-allowlist.json" ] && python3 -c "
+import json, sys
+allowed = set(json.loads(sys.argv[1]))
+browsers = {b.lower() for b in json.load(open(sys.argv[2])).get('browsers', [])}
+sys.exit(0 if allowed & browsers else 1)" "$allowed_json" "$CONFIG_DIR/site-allowlist.json" 2>/dev/null; then
+    site_note=" Site allowlist active for browser (warn, then close)."
+  fi
+  local msg="Session started: $duration ($topic). Allowed: $n. Existing windows left alone; new apps outside the list will be closed.$site_note"
+  [ -z "$topic" ] && msg="Session started: $duration. Allowed: $n. Existing windows left alone; new apps outside the list will be closed.$site_note"
+  notify "$msg"
+  echo "$msg"
+}
+
+cmd_stop() {
+  if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
+  # Flag quiz so the enforcer never kills the quiz terminal.
+  python3 -c "
+import json
+p = '$STATE_FILE'
+s = json.load(open(p))
+s['quiz_active'] = True
+json.dump(s, open(p, 'w'), indent=2)
+"
+  if command -v kitty >/dev/null 2>&1; then
+    # Title match 'Focus Quiz' is allowlisted in the enforcer.
+    # Wrapper holds the window open unless the quiz passes.
+    kitty --title "Focus Quiz - answer to unlock" "$HOME/.config/hypr/scripts/focus-quiz-term.sh" &
+    echo "Exit quiz opened in a new terminal. Answer it to unlock."
+    echo "In a hurry? 'focus-mode cancel' bails out (3 questions + END FOCUS)."
+  else
+    python3 "$QUIZ"
+  fi
 }
 
 cmd_unlock() {
@@ -128,6 +184,8 @@ import json
 p = '$STATE_FILE'
 s = json.load(open(p))
 s['active'] = False
+s['quiz_active'] = False
+s['unlocked_at'] = __import__('time').time()
 json.dump(s, open(p, 'w'), indent=2)
 "
   if [ -f "$PID_FILE" ]; then
@@ -135,46 +193,19 @@ json.dump(s, open(p, 'w'), indent=2)
     rm -f "$PID_FILE"
   fi
   pkill -f "focus-enforcer.py" 2>/dev/null || true
+  local prev
   prev="$(python3 -c "import json; print(json.load(open('$STATE_FILE')).get('dnd_prev','off'))" 2>/dev/null)"
   if [ "$prev" = "off" ]; then noctalia msg notification-dnd-set false >/dev/null 2>&1 || true; fi
   noctalia msg caffeine-disable >/dev/null 2>&1 || true
+  notify "Session ended. Do Not Disturb restored."
   echo "Focus Mode ended."
-}
-
-cmd_status() {
-  if ! is_active; then echo "Focus Mode: inactive"; return 0; fi
-  python3 - "$STATE_FILE" <<'EOF'
-import json, sys, time
-s = json.load(open(sys.argv[1]))
-now = time.time()
-rem = max(0, int(s.get("ends_at", now) - now))
-h, m = rem // 3600, (rem % 3600) // 60
-print(f"Focus Mode: ACTIVE  remaining {h}h {m:02d}m")
-print(f"Allowed: {', '.join(s.get('allowed', []))}")
-EOF
-}
-
-cmd_stop() {
-  if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
-  python3 -c "
-import json
-p = '$STATE_FILE'
-s = json.load(open(p))
-s['quiz_active'] = True
-json.dump(s, open(p, 'w'), indent=2)
-"
-  if command -v kitty >/dev/null 2>&1; then
-    kitty --title "Focus Quiz - answer to unlock" "$HOME/.config/hypr/scripts/focus-quiz-term.sh" &
-    echo "Exit quiz opened in a new terminal. Answer it to unlock."
-  else
-    python3 "$HOME/.config/hypr/scripts/focus-quiz.py"
-  fi
 }
 
 cmd_cancel() {
   if ! is_active; then echo "Focus Mode is not active." >&2; return 1; fi
   echo "Cancelling still takes work: answer 3 questions, then confirm."
-  if ! python3 "$HOME/.config/hypr/scripts/focus-quiz.py" --self-review-cancel; then
+  echo "Sleepwalking out is not an option."
+  if ! python3 "$QUIZ" --self-review --cancel; then
     echo "Cancel aborted." >&2; return 1
   fi
   python3 -c "
@@ -188,10 +219,32 @@ json.dump(s, open(p, 'w'), indent=2)
   cmd_unlock
 }
 
-cmd_gui() {
-  [ -x "$CONFIG_DIR/gui/.venv/bin/python" ] || { echo "GUI venv missing" >&2; return 1; }
-  setsid "$CONFIG_DIR/gui/.venv/bin/python" "$CONFIG_DIR/gui/app.py" "$@" >/dev/null 2>&1 < /dev/null &
-  echo "Focus Mode GUI launched."
+cmd_status() {
+  if ! is_active; then echo "Focus Mode: inactive"; return 0; fi
+  python3 - "$STATE_FILE" <<'EOF'
+import json, sys, time
+s = json.load(open(sys.argv[1]))
+now = time.time()
+rem = max(0, int(s.get("ends_at", now) - now))
+h, m = rem // 3600, (rem % 3600) // 60
+print(f"Focus Mode: ACTIVE  remaining {h}h {m:02d}m")
+print(f"Topic: {s.get('topic') or '(none)'}")
+print(f"Preset: {s.get('preset') or '(custom)'}")
+print(f"Allowed: {', '.join(s.get('allowed', []))}")
+tb = s.get('title_block', [])
+tbl = [e.get('pattern', e) if isinstance(e, dict) else e for e in tb]
+print(f"Title-blocked: {', '.join(str(x) for x in tbl) or '(none)'} (killed on sight, no grace)")
+print(f"Grandfathered windows: {len(s.get('grandfathered', []))} (open before start, app-exempt)")
+try:
+    import os
+    rules = json.load(open(os.path.expanduser("~/.config/focus-mode/site-allowlist.json")))
+    pats = [e.get("pattern", "") for e in rules.get("allow", [])]
+    browsers = ", ".join(rules.get("browsers", []))
+    print(f"Sites: allowlist ({len(pats)} patterns, {rules.get('grace_secs', 30)}s warn-grace) for {browsers}")
+except Exception as e:
+    print(f"Sites: no site policy ({e})")
+print("Timer expired: quiz still required to exit." if rem == 0 else "")
+EOF
 }
 
 cmd_sites() {
@@ -229,61 +282,204 @@ print(f"\nEdit: {p} (live, no restart needed)")
 EOF
 }
 
+cmd_usage() {
+  [ -n "${1:-}" ] && echo "focus-mode: $1" >&2
+  echo "usage: focus-mode [COMMAND] [OPTIONS]" >&2
+  echo "Try 'focus-mode help' for more information." >&2
+  exit 1
+}
+
 cmd_help() {
   case "${1:-}" in
     ""|help)
-      cat <<'HELPEOF'
+      cat <<'EOF'
 Focus Mode — Zen-style focus sessions for Hyprland.
+
+Starts a timed session: only allowlisted apps may open new windows,
+browser tabs are checked against a site allowlist (warn, then close),
+notifications go quiet, and exiting takes an AI quiz about your topic.
 
 Usage: focus-mode [COMMAND] [OPTIONS]
 
 Commands:
-  start     Begin a session [--preset/--duration/--allow/--topic]  [s]
-  stop      Open the exit quiz (the normal way out)                [q]
-  status    Show the active session                                [st]
-  cancel    Bail out: 3 questions + typed confirm                  [c]
-  pick      Interactive fuzzel starter                             [p]
-  gui       Open the Qt dashboard                                  [g]
-  sites     Show the browser site allowlist                        [w]
-  unlock    End the session (called by the quiz on pass)           [u]
-  help      This message or a command's help                       [h]
+  start     Begin a session [--preset/--duration/--allow/--topic]  [aliases: s]
+  stop      Open the exit quiz (the normal way out)                [aliases: q]
+  status    Show the active session                                [aliases: st]
+  cancel    Bail out: 3 questions + typed confirm, no MCQ quiz    [aliases: c]
+  pick      Interactive fuzzel starter                             [aliases: p]
+  gui       Open the Qt dashboard                                [aliases: g]
+  sites     Show the browser site allowlist                        [aliases: w]
+  unlock    End the session (called by the quiz on pass)           [aliases: u]
+  help      Print this message or a command's help                 [aliases: h]
+
+Keybinds (Hyprland, relogin to apply):
+  SUPER+CTRL+F   Start session (picker)
+  SUPER+SHIFT+F  Stop session (exit quiz)
+  SUPER+ALT+F    Session status
 
 Examples:
   focus-mode pick
-  focus-mode start --preset study --duration 25m --topic "thermo"
-  focus-mode s --duration 1h --allow kitty,code
+  focus-mode start --preset study --duration 25m --topic "thermodynamics"
+  focus-mode s --duration 1h30m --allow kitty,code
+  focus-mode st
+  focus-mode cancel
+
+Files:
+  presets ......... ~/.config/focus-mode/presets/
+  site allowlist .. ~/.config/focus-mode/site-allowlist.json  (live-reloaded)
+  state/log ....... ~/.config/focus-mode/state.json, enforcer.log, pick.log
+
 Run 'focus-mode help COMMAND' for command-specific options.
-HELPEOF
+EOF
       return 0 ;;
     s|start)
-      echo "Usage: focus-mode start [--preset NAME] [--duration DUR] [--allow A,B] [--topic TEXT] [--title-block P1,P2]"; return 0 ;;
+      cat <<'EOF'
+Start a focus session.
+
+Usage: focus-mode start [--preset NAME] [--duration DUR] [--allow A,B] [--topic TEXT] [--title-block P1,P2]
+Aliases: s
+
+Options:
+  --preset NAME    App preset from ~/.config/focus-mode/presets/ (code, study, ...)
+  --duration DUR   25, 25m, 1h, 1h30m (bare number = minutes)  [default: 25m]
+  --allow A,B      Extra app classes on top of the preset (comma-separated)
+  --topic TEXT     Focus topic — the exit quiz asks about this
+  --title-block P1,P2
+                   Extra window-title substrings to kill on sight (no grace,
+                   no grandfathering). Presets may ship their own.
+
+Behavior:
+  Windows open now are grandfathered (untouched). New windows whose class
+  is not allowlisted are closed instantly. Browser tabs must additionally
+  match the site allowlist (warn, then close after the grace period).
+  Do Not Disturb + caffeine turn on; both restore on exit.
+
+Examples:
+  focus-mode start --preset study --duration 25m --topic "thermodynamics"
+  focus-mode s --duration 1h30m --allow kitty,code
+  focus-mode s --preset minimal --duration 45 --topic "inbox zero"
+EOF
+      return 0 ;;
+    q|stop)
+      cat <<'EOF'
+Stop the session via the exit quiz (the normal way out).
+
+Usage: focus-mode stop
+Aliases: q
+
+Opens the quiz terminal: answer MCQs about your session topic (2/3 to pass).
+No topic or no AI backend falls back to written self-review.
+In a hurry? 'focus-mode cancel' ends now without the quiz.
+EOF
+      return 0 ;;
+    st|status)
+      cat <<'EOF'
+Show the active session.
+
+Usage: focus-mode status
+Aliases: st
+
+Prints remaining time, topic, preset, allowed apps, grandfathered windows,
+and the site-allowlist policy. Prints "inactive" when no session runs.
+EOF
+      return 0 ;;
+    c|cancel)
+      cat <<'EOF'
+End the session without the MCQ quiz (earned escape hatch).
+
+Usage: focus-mode cancel
+Aliases: c
+
+Still takes work: answer the same 3 written self-review questions,
+then type END FOCUS to confirm. Short or empty answers abort.
+The session is stamped as cancelled in the state file.
+Enforcer stops, Do Not Disturb restores.
+EOF
+      return 0 ;;
+    p|pick)
+      cat <<'EOF'
+Interactive starter (fuzzel picker).
+
+Usage: focus-mode pick
+Aliases: p
+
+Walks through duration -> preset -> extras -> topic, then starts.
+Bound to SUPER+CTRL+F. Progress and failures land in pick.log.
+EOF
+      return 0 ;;
+    w|sites)
+      cat <<'EOF'
+Show the browser site allowlist.
+
+Usage: focus-mode sites
+Aliases: w
+
+Lists watched browser classes, the warn-then-kill grace, and allowed
+page-title patterns. Edit the JSON directly — it reloads live, no restart.
+EOF
+      return 0 ;;
+    g|gui)
+      cat <<'EOF'
+Open the Qt dashboard.
+
+Usage: focus-mode gui
+Aliases: g
+
+Launches the graphical dashboard (status, start/stop/cancel, MCQ quiz
+dialog) detached. Windows run as WM_CLASS focus-gui, exempt from the
+enforcer. Extra args are passed to the GUI (e.g. --smoke for a headless
+self-check).
+EOF
+      return 0 ;;
+    u|unlock)
+      cat <<'EOF'
+End the session (internal).
+
+Usage: focus-mode unlock
+Aliases: u
+
+Called by the quiz on pass. Running it by hand skips the quiz —
+that is the manual bypass; prefer 'stop', keep 'cancel' for hurry.
+EOF
+      return 0 ;;
     *)
       echo "unknown help topic: $1 (see 'focus-mode help')" >&2; return 1 ;;
   esac
 }
 
-# Per-command help: `focus-mode start -h` == `focus-mode help start`.
+cmd_gui() {
+  [ -x "$GUI_PY" ] || { echo "GUI venv missing at $GUI_PY" >&2; return 1; }
+  [ -f "$GUI_APP" ] || { echo "GUI app missing at $GUI_APP" >&2; return 1; }
+  setsid "$GUI_PY" "$GUI_APP" "$@" >/dev/null 2>&1 < /dev/null &
+  echo "Focus Mode GUI launched."
+}
+
+# Per-command help via second arg: `focus-mode start -h` == `focus-mode help start`.
 if [ "${2:-}" = "-h" ] || [ "${2:-}" = "--help" ]; then
   case "${1:-}" in
-    s|start) set -- help start ;; q|stop) set -- help stop ;;
-    st|status) set -- help status ;; c|cancel) set -- help cancel ;;
-    p|pick) set -- help pick ;; g|gui) set -- help gui ;;
-    w|sites) set -- help sites ;; u|unlock) set -- help unlock ;;
-    h|help) set -- help help ;; *) set -- help "$1" ;;
+    s|start) set -- help start ;;
+    q|stop) set -- help stop ;;
+    u|unlock) set -- help unlock ;;
+    c|cancel) set -- help cancel ;;
+    st|status) set -- help status ;;
+    w|sites) set -- help sites ;;
+    p|pick) set -- help pick ;;
+    g|gui) set -- help gui ;;
+    h|help) set -- help help ;;
+    *) set -- help "$1" ;;
   esac
 fi
 
 case "${1:-}" in
   start|s) shift; cmd_start "$@" ;;
   stop|q) cmd_stop ;;
-  cancel|c) cmd_cancel ;;
   unlock|u) cmd_unlock ;;
+  cancel|c) cmd_cancel ;;
   status|st) cmd_status ;;
+  sites|w) cmd_sites ;;
   pick|p) exec "$PICKER" ;;
   gui|g) shift; cmd_gui "$@" ;;
-  sites|w) cmd_sites ;;
   help|h|-h|--help) cmd_help "${2:-}" ;;
-  "") echo "usage: focus-mode [COMMAND] [OPTIONS]" >&2
-      echo "Try 'focus-mode help' for more information." >&2; exit 1 ;;
-  *) echo "focus-mode: unknown command: $1" >&2; exit 1 ;;
+  "") cmd_usage ;;
+  *) cmd_usage "unknown command: $1" ;;
 esac
